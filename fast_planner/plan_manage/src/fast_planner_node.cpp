@@ -27,6 +27,7 @@
 #include <visualization_msgs/Marker.h>
 
 #include <plan_manage/kino_replan_fsm.h>
+#include <plan_manage/rrt_replan_fsm.h>
 #include <plan_manage/topo_replan_fsm.h>
 
 #include <plan_manage/backward.hpp>
@@ -44,10 +45,10 @@ int main(int argc, char** argv) {
   nh.param("planner_node/planner", planner, -1);
 
   TopoReplanFSM topo_replan;
-  KinoReplanFSM kino_replan;
+  rrtReplanFSM rrt_replan;
 
   if (planner == 1) {
-    kino_replan.init(nh);
+    rrt_replan.init(nh);
   } else if (planner == 2) {
     topo_replan.init(nh);
   }

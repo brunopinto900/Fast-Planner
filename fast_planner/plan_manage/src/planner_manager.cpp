@@ -65,11 +65,17 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
     geo_path_finder_->init();
   }
 
+  // if (use_kinodynamic_path) {
+  //   kino_path_finder_.reset(new KinodynamicAstar);
+  //   kino_path_finder_->setParam(nh);
+  //   kino_path_finder_->setEnvironment(edt_environment_);
+  //   kino_path_finder_->init();
+  // }
   if (use_kinodynamic_path) {
-    kino_path_finder_.reset(new KinodynamicAstar);
-    kino_path_finder_->setParam(nh);
-    kino_path_finder_->setEnvironment(edt_environment_);
-    kino_path_finder_->init();
+    rrt_path_finder_.reset(new RRTstar);
+    rrt_path_finder_->setParam(nh);
+    rrt_path_finder_->setEnvironment(edt_environment_);
+    rrt_path_finder_->init();
   }
 
   if (use_optimization) {
@@ -122,13 +128,12 @@ bool FastPlannerManager::checkTrajCollision(double& distance) {
 
 // !SECTION
 
-// SECTION kinodynamic replanning
-
-bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
+// SECTION RRT replanning
+bool FastPlannerManager::rrtReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
                                            Eigen::Vector3d start_acc, Eigen::Vector3d end_pt,
                                            Eigen::Vector3d end_vel) {
 
-  std::cout << "[kino replan]: -----------------------" << std::endl;
+  std::cout << "[rrt replan]: -----------------------" << std::endl;
   cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << ", "
        << start_acc.transpose() << "\ngoal:" << end_pt.transpose() << ", " << end_vel.transpose()
        << endl;
@@ -151,29 +156,29 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
   t1 = ros::Time::now();
 
-  kino_path_finder_->reset();
+  rrt_path_finder_->reset();
 
-  int status = kino_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, true);
+  int status = rrt_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, true);
 
-  if (status == KinodynamicAstar::NO_PATH) {
-    cout << "[kino replan]: kinodynamic search fail!" << endl;
+  if (status == RRTstar::NO_PATH) {
+    cout << "[rrt replan]: rrt search fail!" << endl;
 
     // retry searching with discontinuous initial state
-    kino_path_finder_->reset();
-    status = kino_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, false);
+    rrt_path_finder_->reset();
+    status = rrt_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, false);
 
-    if (status == KinodynamicAstar::NO_PATH) {
-      cout << "[kino replan]: Can't find path." << endl;
+    if (status == RRTstar::NO_PATH) {
+      cout << "[rrt replan]: Can't find path." << endl;
       return false;
     } else {
-      cout << "[kino replan]: retry search success." << endl;
+      cout << "[rrt replan]: retry search success." << endl;
     }
 
   } else {
-    cout << "[kino replan]: kinodynamic search success." << endl;
+    cout << "[rrt replan]: rrt search success." << endl;
   }
 
-  plan_data_.kino_path_ = kino_path_finder_->getKinoTraj(0.01);
+  plan_data_.kino_path_ = rrt_path_finder_->getKinoTraj(0.01);
 
   t_search = (ros::Time::now() - t1).toSec();
 
@@ -181,7 +186,7 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
   double                  ts = pp_.ctrl_pt_dist / pp_.max_vel_;
   vector<Eigen::Vector3d> point_set, start_end_derivatives;
-  kino_path_finder_->getSamples(ts, point_set, start_end_derivatives);
+  rrt_path_finder_->getSamples(ts, point_set, start_end_derivatives);
 
   Eigen::MatrixXd ctrl_pts;
   NonUniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
@@ -193,7 +198,7 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
   int cost_function = BsplineOptimizer::NORMAL_PHASE;
 
-  if (status != KinodynamicAstar::REACH_END) {
+  if (status != RRTstar::REACH_END) {
     cost_function |= BsplineOptimizer::ENDPOINT;
   }
 
@@ -223,7 +228,7 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
   double tn = pos.getTimeSum();
 
-  cout << "[kino replan]: Reallocate ratio: " << tn / to << endl;
+  cout << "[RRT replan]: Reallocate ratio: " << tn / to << endl;
   if (tn / to > 3.0) ROS_ERROR("reallocate error.");
 
   t_adjust = (ros::Time::now() - t1).toSec();
@@ -233,7 +238,7 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
   local_data_.position_traj_ = pos;
 
   double t_total = t_search + t_opt + t_adjust;
-  cout << "[kino replan]: time: " << t_total << ", search: " << t_search << ", optimize: " << t_opt
+  cout << "[rrt replan]: time: " << t_total << ", search: " << t_search << ", optimize: " << t_opt
        << ", adjust time:" << t_adjust << endl;
 
   pp_.time_search_   = t_search;
@@ -244,6 +249,130 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
   return true;
 }
+
+
+// SECTION kinodynamic replanning
+
+// bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel,
+//                                            Eigen::Vector3d start_acc, Eigen::Vector3d end_pt,
+//                                            Eigen::Vector3d end_vel) {
+
+//   std::cout << "[kino replan]: -----------------------" << std::endl;
+//   cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << ", "
+//        << start_acc.transpose() << "\ngoal:" << end_pt.transpose() << ", " << end_vel.transpose()
+//        << endl;
+
+//   if ((start_pt - end_pt).norm() < 0.2) {
+//     cout << "Close goal" << endl;
+//     return false;
+//   }
+
+//   ros::Time t1, t2;
+
+//   local_data_.start_time_ = ros::Time::now();
+//   double t_search = 0.0, t_opt = 0.0, t_adjust = 0.0;
+
+//   Eigen::Vector3d init_pos = start_pt;
+//   Eigen::Vector3d init_vel = start_vel;
+//   Eigen::Vector3d init_acc = start_acc;
+
+//   // kinodynamic path searching
+
+//   t1 = ros::Time::now();
+
+//   kino_path_finder_->reset();
+
+//   int status = kino_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, true);
+
+//   if (status == KinodynamicAstar::NO_PATH) {
+//     cout << "[kino replan]: kinodynamic search fail!" << endl;
+
+//     // retry searching with discontinuous initial state
+//     kino_path_finder_->reset();
+//     status = kino_path_finder_->search(start_pt, start_vel, start_acc, end_pt, end_vel, false);
+
+//     if (status == KinodynamicAstar::NO_PATH) {
+//       cout << "[kino replan]: Can't find path." << endl;
+//       return false;
+//     } else {
+//       cout << "[kino replan]: retry search success." << endl;
+//     }
+
+//   } else {
+//     cout << "[kino replan]: kinodynamic search success." << endl;
+//   }
+
+//   plan_data_.kino_path_ = kino_path_finder_->getKinoTraj(0.01);
+
+//   t_search = (ros::Time::now() - t1).toSec();
+
+//   // parameterize the path to bspline
+
+//   double                  ts = pp_.ctrl_pt_dist / pp_.max_vel_;
+//   vector<Eigen::Vector3d> point_set, start_end_derivatives;
+//   kino_path_finder_->getSamples(ts, point_set, start_end_derivatives);
+
+//   Eigen::MatrixXd ctrl_pts;
+//   NonUniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
+//   NonUniformBspline init(ctrl_pts, 3, ts);
+
+//   // bspline trajectory optimization
+
+//   t1 = ros::Time::now();
+
+//   int cost_function = BsplineOptimizer::NORMAL_PHASE;
+
+//   if (status != KinodynamicAstar::REACH_END) {
+//     cost_function |= BsplineOptimizer::ENDPOINT;
+//   }
+
+//   ctrl_pts = bspline_optimizers_[0]->BsplineOptimizeTraj(ctrl_pts, ts, cost_function, 1, 1);
+
+//   t_opt = (ros::Time::now() - t1).toSec();
+
+//   // iterative time adjustment
+
+//   t1                    = ros::Time::now();
+//   NonUniformBspline pos = NonUniformBspline(ctrl_pts, 3, ts);
+
+//   double to = pos.getTimeSum();
+//   pos.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_);
+//   bool feasible = pos.checkFeasibility(false);
+
+//   int iter_num = 0;
+//   while (!feasible && ros::ok()) {
+
+//     feasible = pos.reallocateTime();
+
+//     if (++iter_num >= 3) break;
+//   }
+
+//   // pos.checkFeasibility(true);
+//   // cout << "[Main]: iter num: " << iter_num << endl;
+
+//   double tn = pos.getTimeSum();
+
+//   cout << "[kino replan]: Reallocate ratio: " << tn / to << endl;
+//   if (tn / to > 3.0) ROS_ERROR("reallocate error.");
+
+//   t_adjust = (ros::Time::now() - t1).toSec();
+
+//   // save planned results
+
+//   local_data_.position_traj_ = pos;
+
+//   double t_total = t_search + t_opt + t_adjust;
+//   cout << "[kino replan]: time: " << t_total << ", search: " << t_search << ", optimize: " << t_opt
+//        << ", adjust time:" << t_adjust << endl;
+
+//   pp_.time_search_   = t_search;
+//   pp_.time_optimize_ = t_opt;
+//   pp_.time_adjust_   = t_adjust;
+
+//   updateTrajInfo();
+
+//   return true;
+// }
 
 // !SECTION
 
